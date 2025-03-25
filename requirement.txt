@@ -1,0 +1,9 @@
+eventlet
+flask
+flask-socketio
+ultralytics
+numpy
+opencv-python
+concurrent-futures
+apscheduler
+torch
