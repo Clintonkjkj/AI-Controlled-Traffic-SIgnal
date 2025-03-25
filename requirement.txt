@@ -1,9 +1,8 @@
+Flask
 eventlet
-flask
-flask-socketio
-ultralytics
-numpy
-opencv-python
-concurrent-futures
-apscheduler
 torch
+opencv-python
+numpy
+ultralytics
+flask-socketio
+apscheduler
