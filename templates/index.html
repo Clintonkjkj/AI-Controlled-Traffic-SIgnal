@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Video Traffic Analysis</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f8f9fa;
+        color: #333;
+      }
+
+      h1 {
+        color: #2c3e50;
+        text-align: center;
+        margin-bottom: 20px;
+      }
+
+      .container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .video-container {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid #ddd;
+        padding: 20px;
+        border-radius: 8px;
+        background-color: white;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .controls {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .content-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+        grid-gap: 20px;
+      }
+
+      .video-processor {
+        border: 1px solid #e0e0e0;
+        padding: 15px;
+        border-radius: 8px;
+        background-color: white;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .video-processor-title {
+        font-weight: bold;
+        margin-bottom: 10px;
+        font-size: 16px;
+        color: #2c3e50;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding-right: 20px;
+      }
+
+      .frame-container {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 1;
+        overflow: hidden;
+        border-radius: 4px;
+        background-color: #000;
+      }
+
+      .frame {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+      }
+
+      .frame.paused {
+        opacity: 0.7;
+        filter: grayscale(30%);
+      }
+
+      .detection-info {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 15px;
+        gap: 10px;
+      }
+
+      .detection-box {
+        flex: 1;
+        padding: 10px;
+        background-color: #f8f9fa;
+        border-radius: 6px;
+        border: 1px solid #e0e0e0;
+      }
+
+      .detection-box h4 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        color: #2c3e50;
+      }
+
+      .status {
+        margin-top: 15px;
+        padding: 10px;
+        background-color: #f8f9fa;
+        border-radius: 6px;
+        font-size: 14px;
+        border: 1px solid #e0e0e0;
+      }
+
+      #dropArea {
+        border: 2px dashed #adb5bd;
+        border-radius: 8px;
+        padding: 30px;
+        text-align: center;
+        margin-bottom: 20px;
+        background-color: #f8f9fa;
+        transition: all 0.3s ease;
+      }
+
+      #dropArea.highlight {
+        border-color: #4dabf7;
+        background-color: #e7f5ff;
+      }
+
+      #dropArea h3 {
+        margin-top: 0;
+        color: #495057;
+      }
+
+      .custom-file-input {
+        position: relative;
+        overflow: hidden;
+        display: inline-block;
+      }
+
+      .custom-file-input input[type="file"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        opacity: 0;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+      }
+
+      .custom-file-button {
+        display: inline-block;
+        padding: 8px 16px;
+        background-color: #4dabf7;
+        color: white;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: background-color 0.2s;
+      }
+
+      .custom-file-input:hover .custom-file-button {
+        background-color: #339af0;
+      }
+      button {
+        padding: 8px 16px;
+        background-color: #4dabf7;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background-color 0.2s;
+      }
+
+      button:hover {
+        background-color: #339af0;
+      }
+
+      button:disabled {
+        background-color: #adb5bd;
+        cursor: not-allowed;
+      }
+
+      #processBtn {
+        background-color: #40c057;
+      }
+
+      #processBtn:hover {
+        background-color: #37b24d;
+      }
+
+      #stopBtn {
+        background-color: #fa5252;
+      }
+
+      #stopBtn:hover {
+        background-color: #f03e3e;
+      }
+
+      input[type="number"] {
+        width: 60px;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid #ced4da;
+      }
+
+      .file-list {
+        margin-top: 15px;
+        max-height: 150px;
+        overflow-y: auto;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        background-color: white;
+      }
+
+      .file-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 12px;
+        border-bottom: 1px solid #f1f3f5;
+        align-items: center;
+      }
+
+      .file-item:last-child {
+        border-bottom: none;
+      }
+
+      .file-select {
+        cursor: pointer;
+        color: #4dabf7;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 13px;
+        transition: all 0.2s;
+      }
+
+      .file-select:hover {
+        background-color: #e7f5ff;
+      }
+
+      .log {
+        height: 120px;
+        overflow-y: auto;
+        background-color: #f8f9fa;
+        padding: 10px;
+        font-family: "Courier New", monospace;
+        margin-top: 15px;
+        border-radius: 6px;
+        border: 1px solid #e0e0e0;
+        font-size: 13px;
+      }
+
+      .progress-container {
+        width: 100%;
+        background-color: #e9ecef;
+        border-radius: 6px;
+        margin: 10px 0;
+        height: 10px;
+      }
+
+      .progress-bar {
+        height: 100%;
+        width: 0;
+        background-color: #4dabf7;
+        border-radius: 6px;
+        transition: width 0.3s ease;
+        font-size: 0;
+      }
+
+      .traffic-signal {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 2px solid white;
+        box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+        z-index: 20;
+      }
+
+      .traffic-signal.green {
+        background-color: #40c057;
+        box-shadow: 0 0 10px #40c057;
+      }
+
+      .traffic-signal.red {
+        background-color: #fa5252;
+        box-shadow: 0 0 10px #fa5252;
+      }
+
+      .overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 10;
+        opacity: 0.2;
+      }
+
+      .overlay.green {
+        background-color: #40c057;
+      }
+
+      .overlay.red {
+        background-color: #fa5252;
+      }
+
+      #connectionStatus {
+        padding: 8px;
+        border-radius: 6px;
+        margin-bottom: 15px;
+        text-align: center;
+        font-weight: bold;
+      }
+
+      .connected {
+        background-color: #d3f9d8;
+        color: #2b8a3e;
+        border: 1px solid #40c057;
+      }
+
+      .disconnected {
+        background-color: #ffc9c9;
+        color: #c92a2a;
+        border: 1px solid #fa5252;
+      }
+
+      .countdown-timer {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-weight: bold;
+        font-size: 12px;
+        z-index: 20;
+        min-width: 20px;
+        text-align: center;
+      }
+
+      .signal-info {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 10px;
+      }
+
+      .processor-status {
+        font-size: 13px;
+        color: #495057;
+        flex-grow: 1;
+      }
+
+      .status-text {
+        font-size: 12px;
+        color: #868e96;
+        font-weight: bold;
+      }
+
+      @media (max-width: 768px) {
+        .content-container {
+          grid-template-columns: 1fr;
+        }
+
+        .controls {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        #dropArea {
+          padding: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AI CAM - CONTROLLED TRAFFIC SIGNAL</h1>
+    <div id="connectionStatus" class="disconnected">
+      Disconnected from server
+    </div>
+
+    <div class="container">
+      <div id="dropArea">
+        <h3>Drag & Drop Videos Here</h3>
+        <p>
+          Please upload low resolution videos for better performance also same
+          duration will be better
+        </p>
+        <label class="custom-file-input">
+          <span class="custom-file-button">Choose Files</span>
+          <input type="file" id="fileInput" accept="video/*" multiple />
+        </label>
+        <div class="file-list" id="fileList"></div>
+      </div>
+
+      <div class="video-container">
+        <div class="controls">
+          <label for="frameInterval">Frame Interval:</label>
+          <input type="number" id="frameInterval" min="1" value="10" />
+          <button id="processBtn" disabled>Process Selected Videos</button>
+          <button id="stopBtn" disabled>Stop All Processing</button>
+        </div>
+
+        <div id="status" class="status">
+          Select up to 4 videos to process simultaneously.
+        </div>
+
+        <div class="content-container" id="videoGrid">
+          <!-- Video processors will be dynamically added here -->
+        </div>
+
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+
+    <script>
+      // Global variables
+      const uploadedFiles = [];
+      const selectedVideos = [];
+      let processingActive = false;
+      let vehicleCounts = {};
+      let socket = null;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
+      const reconnectDelay = 3000;
+      let countdownIntervals = {};
+
+      // Utility functions
+      function logMessage(message) {
+        const log = document.getElementById("log");
+        const timestamp = new Date().toLocaleTimeString();
+        log.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function updateStatus(message) {
+        document.getElementById("status").textContent = message;
+      }
+
+      function updateConnectionStatus(connected) {
+        const statusElement = document.getElementById("connectionStatus");
+        statusElement.textContent = connected
+          ? "Connected to server"
+          : "Disconnected from server";
+        statusElement.className = connected ? "connected" : "disconnected";
+      }
+
+      function updateProcessorProgress(processorId, percent) {
+        const progressBar = document.getElementById(
+          `progressBar-${processorId}`
+        );
+        if (progressBar) {
+          progressBar.style.width = percent + "%";
+          progressBar.textContent = percent + "%";
+        }
+      }
+
+      function updateProcessorStatus(processorId, message) {
+        const statusElem = document.getElementById(`status-${processorId}`);
+        if (statusElem) {
+          statusElem.textContent = message;
+        }
+      }
+
+      function updateTrafficSignalDisplay(processorId, signalColor) {
+        const trafficSignalElement = document.getElementById(
+          `trafficSignal-${processorId}`
+        );
+        if (trafficSignalElement) {
+          trafficSignalElement.classList.remove("red", "green");
+          trafficSignalElement.classList.add(signalColor);
+        }
+
+        const overlayElement = document.getElementById(
+          `overlay-${processorId}`
+        );
+        if (overlayElement) {
+          overlayElement.classList.remove("red", "green");
+          overlayElement.classList.add(signalColor);
+        }
+      }
+
+      function startCountdownTimer(processorId, duration) {
+        // Clear any existing timer for this processor
+        if (countdownIntervals[processorId]) {
+          clearInterval(countdownIntervals[processorId]);
+        }
+
+        const timerElement = document.getElementById(
+          `countdown-${processorId}`
+        );
+        if (!timerElement) return;
+
+        let remaining = Math.ceil(duration);
+        timerElement.textContent = remaining;
+
+        countdownIntervals[processorId] = setInterval(() => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(countdownIntervals[processorId]);
+            timerElement.textContent = "0";
+          } else {
+            timerElement.textContent = remaining;
+          }
+        }, 1000);
+      }
+
+      function stopCountdownTimer(processorId) {
+        if (countdownIntervals[processorId]) {
+          clearInterval(countdownIntervals[processorId]);
+          delete countdownIntervals[processorId];
+        }
+        const timerElement = document.getElementById(
+          `countdown-${processorId}`
+        );
+        if (timerElement) {
+          timerElement.textContent = "0";
+        }
+      }
+
+      // Initialize WebSocket connection
+      function initWebSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const host = window.location.host;
+        const wsUrl = `${protocol}//${host}`;
+
+        socket = io(wsUrl);
+
+        socket.on("connect", () => {
+          reconnectAttempts = 0;
+          updateConnectionStatus(true);
+          logMessage("Connected to server via WebSocket");
+        });
+
+        socket.on("disconnect", () => {
+          updateConnectionStatus(false);
+          logMessage("Disconnected from server");
+          attemptReconnect();
+        });
+
+        socket.on("connect_error", (error) => {
+          console.error("WebSocket error:", error);
+          logMessage("WebSocket error occurred");
+          attemptReconnect();
+        });
+
+        socket.on("frame_update", (data) => {
+          const processorId = data.processor_id;
+
+          // Update frame image
+          if (data.image) {
+            const videoElement = document.getElementById(
+              `currentVideo-${processorId}`
+            );
+            if (videoElement) {
+              videoElement.src = `data:image/jpeg;base64,${data.image}`;
+              videoElement.classList.remove("paused");
+            }
+          }
+
+          // Update object list
+          const objectList = document.getElementById(
+            `objectList-${processorId}`
+          );
+          if (objectList) {
+            objectList.innerHTML = "";
+            for (const [obj, count] of Object.entries(data.objects || {})) {
+              objectList.innerHTML += `<div>${obj}: ${count}</div>`;
+            }
+          }
+
+          // Update vehicle count
+          const vehicleCount = data.vehicles || 0;
+          vehicleCounts[processorId] = vehicleCount;
+          const vehicleCountElement = document.getElementById(
+            `vehicleCount-${processorId}`
+          );
+          if (vehicleCountElement) {
+            vehicleCountElement.textContent = vehicleCount;
+          }
+
+          // Update progress
+          if (data.progress !== undefined && data.total_frames !== undefined) {
+            const progress = Math.min(
+              100,
+              Math.round((data.progress / data.total_frames) * 100)
+            );
+            updateProcessorProgress(processorId, progress);
+          }
+
+          // Update traffic signal
+          if (data.signal) {
+            updateTrafficSignalDisplay(processorId, data.signal);
+            if (data.signal === "red") {
+              const videoElement = document.getElementById(
+                `currentVideo-${processorId}`
+              );
+              if (videoElement) {
+                videoElement.classList.add("paused");
+              }
+              stopCountdownTimer(processorId);
+            }
+          }
+
+          // Update remaining green time if available
+          if (data.remaining_green_time !== undefined) {
+            const timerElement = document.getElementById(
+              `countdown-${processorId}`
+            );
+            if (timerElement) {
+              timerElement.textContent = Math.ceil(data.remaining_green_time);
+            }
+          }
+        });
+
+        socket.on("signal_update", (data) => {
+          const processor = document.getElementById(
+            `processor-${data.processor_id}`
+          );
+          if (processor) {
+            // Update signal light
+            const signalLight = processor.querySelector(".traffic-signal");
+            signalLight.className = "traffic-signal " + data.signal;
+
+            // Update overlay
+            const overlay = processor.querySelector(".overlay");
+            overlay.className = "overlay " + data.signal;
+
+            // Update status text
+            const statusText = processor.querySelector(".status-text");
+            if (data.signal === "green") {
+              statusText.textContent = `GREEN for ${Math.ceil(
+                data.green_time
+              )}s`;
+              startCountdownTimer(data.processor_id, data.green_time);
+            } else {
+              statusText.textContent = "RED (waiting)";
+              stopCountdownTimer(data.processor_id);
+            }
+          }
+        });
+
+        socket.on("signal_time_update", (data) => {
+          const processor = document.getElementById(
+            `processor-${data.processor_id}`
+          );
+          if (processor) {
+            const statusText = processor.querySelector(".status-text");
+            if (statusText) {
+              statusText.textContent = `GREEN for ${Math.ceil(
+                data.remaining_time
+              )}s`;
+            }
+            startCountdownTimer(data.processor_id, data.remaining_time);
+          }
+        });
+
+        socket.on("status_update", (data) => {
+          const processorId = data.processor_id;
+          const statusElement = document.getElementById(
+            `status-${processorId}`
+          );
+
+          if (statusElement) {
+            statusElement.textContent = data.message;
+
+            if (
+              data.progress !== undefined &&
+              data.total_frames !== undefined
+            ) {
+              const progressPercent = Math.min(
+                100,
+                Math.round((data.progress / data.total_frames) * 100)
+              );
+              const progressBar = document.getElementById(
+                `progressBar-${processorId}`
+              );
+              if (progressBar) {
+                progressBar.style.width = `${progressPercent}%`;
+                progressBar.textContent = `${progressPercent}%`;
+              }
+            }
+
+            if (data.complete) {
+              const videoElement = document.getElementById(
+                `currentVideo-${processorId}`
+              );
+              if (videoElement) {
+                videoElement.classList.add("paused");
+              }
+              updateTrafficSignalDisplay(processorId, "red");
+              stopCountdownTimer(processorId);
+            }
+          }
+
+          if (data.error) {
+            logMessage(`Error in processor ${processorId}: ${data.message}`);
+          }
+        });
+      }
+
+      function attemptReconnect() {
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          logMessage(
+            `Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`
+          );
+          setTimeout(initWebSocket, reconnectDelay);
+        }
+      }
+
+      // Create video processor template
+      function createVideoProcessor(id, videoPath) {
+        const filename = videoPath.split("/").pop();
+        const processorDiv = document.createElement("div");
+        processorDiv.className = "video-processor";
+        processorDiv.id = `processor-${id}`;
+        processorDiv.innerHTML = `
+                  <div class="video-processor-title" title="${filename}">${filename}</div>
+                  <div class="progress-container">
+                      <div class="progress-bar" id="progressBar-${id}">0%</div>
+                  </div>
+                  <div class="frame-container">
+                      <div class="overlay red" id="overlay-${id}"></div>
+                      <img id="currentVideo-${id}" class="frame paused" src="" alt=""/>
+                      <div class="traffic-signal red" id="trafficSignal-${id}"></div>
+                      <div class="countdown-timer" id="countdown-${id}">0</div>
+                  </div>
+                  <div class="detection-info">
+                      <div class="detection-box">
+                          <h4>Objects</h4>
+                          <div id="objectList-${id}"></div>
+                      </div>
+                      <div class="detection-box">
+                          <h4>Vehicles</h4>
+                          <div id="vehicleCount-${id}">0</div>
+                      </div>
+                  </div>
+                  <div class="signal-info">
+                      <div class="processor-status" id="status-${id}">Ready</div>
+                      <div class="status-text">RED (waiting)</div>
+                  </div>
+              `;
+        return processorDiv;
+      }
+
+      // File handling functions
+      function handleFiles(files) {
+        if (files.length === 0) return;
+
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) {
+          formData.append("videos", files[i]);
+        }
+
+        updateStatus("Uploading videos...");
+        logMessage("Starting upload...");
+
+        fetch("/upload", {
+          method: "POST",
+          body: formData,
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then((data) => {
+            updateStatus(`Uploaded ${data.files.length} videos successfully`);
+            logMessage(
+              `Upload complete: ${data.files
+                .map((f) => f.split("/").pop())
+                .join(", ")}`
+            );
+            data.files.forEach((file) => {
+              if (!uploadedFiles.includes(file)) {
+                uploadedFiles.push(file);
+              }
+            });
+            updateFileList();
+          })
+          .catch((error) => {
+            console.error("Error:", error);
+            updateStatus(`Error uploading videos: ${error.message}`);
+            logMessage(`Upload error: ${error.message}`);
+          });
+      }
+
+      function updateFileList() {
+        const fileList = document.getElementById("fileList");
+        fileList.innerHTML = "";
+
+        uploadedFiles.forEach((file) => {
+          const filename = file.split("/").pop();
+          const isSelected = selectedVideos.includes(file);
+          const fileItem = document.createElement("div");
+          fileItem.className = "file-item";
+          fileItem.innerHTML = `
+                      <span>${filename}</span>
+                      <span class="file-select" data-path="${file}">${
+            isSelected ? "Deselect" : "Select"
+          }</span>
+                  `;
+          fileList.appendChild(fileItem);
+        });
+
+        document.querySelectorAll(".file-select").forEach((elem) => {
+          elem.addEventListener("click", function () {
+            const path = this.getAttribute("data-path");
+            toggleVideoSelection(path);
+          });
+        });
+
+        updateProcessButton();
+      }
+
+      function toggleVideoSelection(path) {
+        const index = selectedVideos.indexOf(path);
+        if (index === -1) {
+          if (selectedVideos.length < 4) {
+            selectedVideos.push(path);
+            logMessage(`Selected video: ${path.split("/").pop()}`);
+          } else {
+            updateStatus("Maximum of 4 videos can be selected at once");
+          }
+        } else {
+          selectedVideos.splice(index, 1);
+          logMessage(`Deselected video: ${path.split("/").pop()}`);
+        }
+        updateFileList();
+        updateProcessButton();
+      }
+
+      function updateProcessButton() {
+        const processBtn = document.getElementById("processBtn");
+        processBtn.disabled = selectedVideos.length === 0 || processingActive;
+        updateStatus(
+          selectedVideos.length > 0
+            ? `${selectedVideos.length} video(s) selected. Ready to process.`
+            : "Select up to 4 videos to process simultaneously."
+        );
+      }
+
+      // Video processing functions
+      function startVideoProcessing(processorId, videoPath, interval) {
+        socket.emit("process_video", {
+          video_path: videoPath,
+          interval: interval,
+          processor_id: processorId,
+        });
+      }
+
+      function stopAllProcessing() {
+        processingActive = false;
+        socket.emit("stop_all_processing");
+        document.getElementById("processBtn").disabled = false;
+        document.getElementById("stopBtn").disabled = true;
+        updateStatus("Processing stopped by user");
+        logMessage("All processing stopped by user");
+
+        // Clear all countdown timers
+        Object.keys(countdownIntervals).forEach((pid) => {
+          clearInterval(countdownIntervals[pid]);
+          const timerElement = document.getElementById(`countdown-${pid}`);
+          if (timerElement) {
+            timerElement.textContent = "0";
+          }
+        });
+        countdownIntervals = {};
+      }
+
+      // Event listeners
+      document.addEventListener("DOMContentLoaded", function () {
+        initWebSocket();
+
+        // Drag and drop functionality
+        const dropArea = document.getElementById("dropArea");
+        ["dragenter", "dragover", "dragleave", "drop"].forEach((eventName) => {
+          dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+
+        function highlight() {
+          dropArea.classList.add("highlight");
+        }
+        function unhighlight() {
+          dropArea.classList.remove("highlight");
+        }
+
+        ["dragenter", "dragover"].forEach((eventName) => {
+          dropArea.addEventListener(eventName, highlight, false);
+        });
+
+        ["dragleave", "drop"].forEach((eventName) => {
+          dropArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        dropArea.addEventListener("drop", handleDrop, false);
+
+        function handleDrop(e) {
+          const dt = e.dataTransfer;
+          const files = dt.files;
+          handleFiles(files);
+        }
+
+        // File input handler
+        document
+          .getElementById("fileInput")
+          .addEventListener("change", function (e) {
+            handleFiles(this.files);
+          });
+
+        // Process videos button
+        document
+          .getElementById("processBtn")
+          .addEventListener("click", function () {
+            if (selectedVideos.length === 0) {
+              updateStatus("Please select at least one video to process");
+              return;
+            }
+
+            processingActive = true;
+            document.getElementById("processBtn").disabled = true;
+            document.getElementById("stopBtn").disabled = false;
+            document.getElementById("videoGrid").innerHTML = "";
+
+            selectedVideos.forEach((videoPath, index) => {
+              const processorId = `video-${index}-${Date.now()}`;
+              const processorElement = createVideoProcessor(
+                processorId,
+                videoPath
+              );
+              document
+                .getElementById("videoGrid")
+                .appendChild(processorElement);
+
+              const interval = parseInt(
+                document.getElementById("frameInterval").value
+              );
+              logMessage(
+                `Starting processor ${index} for ${videoPath.split("/").pop()}`
+              );
+
+              startVideoProcessing(processorId, videoPath, interval);
+            });
+
+            updateStatus(
+              `Processing ${selectedVideos.length} videos simultaneously`
+            );
+          });
+
+        // Stop processing button
+        document
+          .getElementById("stopBtn")
+          .addEventListener("click", stopAllProcessing);
+      });
+    </script>
+  </body>
+</html>
