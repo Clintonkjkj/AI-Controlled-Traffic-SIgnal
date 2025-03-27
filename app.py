@@ -18,6 +18,7 @@ import hashlib
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
 from flask_socketio import SocketIO, emit
+import math
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
@@ -29,10 +30,14 @@ app.config['ENV'] = 'production'
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 FRAME_SIZE = (480, 480)  # Reduced frame size
-BASE_GREEN_TIME = 10
-EXTRA_TIME_PER_VEHICLE = 0.5
-SIGNAL_ALLOCATION_INTERVAL = 1
+BASE_GREEN_TIME = 10  # Minimum green time in seconds
+EXTRA_TIME_PER_VEHICLE = 0.5  # Additional seconds per vehicle
+MAX_GREEN_TIME = 60  # Maximum green time in seconds
+MIN_GREEN_TIME = 5  # Minimum green time in seconds
+SIGNAL_ALLOCATION_INTERVAL = 1  # How often to check signal timing
 STATE_FILE = "state.json"
+VEHICLE_TYPES = ["car", "truck", "bus", "motorcycle"]
+EMERGENCY_TYPES = ["ambulance", "fire truck", "police car"]
 
 # Setup logging
 logging.basicConfig(
@@ -108,16 +113,35 @@ def update_processing_status(processor_id, updates=None):
             processing_status[processor_id] = {
                 "vehicle_counts": [],
                 "last_frame": None,
-                "status": "ready"
+                "status": "ready",
+                "signal": "red",
+                "paused": True
             }
         
         if updates:
             if 'vehicle_count' in updates:
+                # Convert to int before storing in the list
+                try:
+                    vehicle_count = max(0, int(round(float(updates['vehicle_count']))))
+                except (ValueError, TypeError):
+                    vehicle_count = 0
+                    
                 vehicle_counts = processing_status[processor_id].get("vehicle_counts", [])
-                vehicle_counts.append(updates['vehicle_count'])
-                if len(vehicle_counts) > 5:
+                vehicle_counts.append(vehicle_count)
+                
+                # Keep a reasonable number of readings for smoothing
+                if len(vehicle_counts) > 10:  # Keep last 10 readings
                     vehicle_counts.pop(0)
-                updates['smoothed_vehicle_count'] = sum(vehicle_counts) / len(vehicle_counts)
+                
+                # Calculate smoothed vehicle count
+                if vehicle_counts:
+                    # Use weighted average where recent counts matter more
+                    weights = [i+1 for i in range(len(vehicle_counts))]  # Linear weights
+                    weighted_sum = sum(v*w for v,w in zip(vehicle_counts, weights))
+                    total_weight = sum(weights)
+                    updates['smoothed_vehicle_count'] = max(0, int(round(weighted_sum / total_weight)))
+                else:
+                    updates['smoothed_vehicle_count'] = 0
             
             processing_status[processor_id].update(updates)
         
@@ -126,33 +150,6 @@ def update_processing_status(processor_id, updates=None):
 def resize_frame(frame):
     """Resize frame to target dimensions"""
     return cv2.resize(frame, FRAME_SIZE, interpolation=cv2.INTER_AREA)
-
-def perform_initial_analysis(video_path, processor_id):
-    """Analyze first few frames to determine vehicle count"""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception(f"Could not open video: {video_path}")
-    
-    vehicle_counts = []
-    try:
-        for _ in range(10):  # Analyze first 10 frames
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            frame = resize_frame(frame)
-            with model_lock:
-                results = model(frame)
-            
-            detections = [results[0].names[int(cls)] for cls in results[0].boxes.cls]
-            vehicle_count = sum(1 for obj in detections if obj in ["car", "truck", "bus", "motorcycle"])
-            vehicle_counts.append(vehicle_count)
-        
-        avg_vehicles = sum(vehicle_counts) / len(vehicle_counts) if vehicle_counts else 0
-        return avg_vehicles
-    
-    finally:
-        cap.release()
 
 def process_frame(video_path, frame_idx, interval, processor_id):
     """Process a single video frame with enhanced detection"""
@@ -169,6 +166,7 @@ def process_frame(video_path, frame_idx, interval, processor_id):
             # If signal is red, return the last frame if available
             if current_signal == "red":
                 last_frame = processor_status.get("last_frame")
+                last_vehicle_count = processor_status.get("smoothed_vehicle_count", 0)
                 if last_frame:
                     return {
                         "processor_id": processor_id,
@@ -176,13 +174,15 @@ def process_frame(video_path, frame_idx, interval, processor_id):
                         "signal": "red",
                         "paused": True,
                         "status": "paused",
-                        "remaining_green_time": 0
+                        "remaining_green_time": 0,
+                        "vehicles": last_vehicle_count
                     }
                 return None
 
             # Check if processing is stopped/paused
             if processor_status.get('status') == 'stopped' or not processor_status.get('processing', True):
                 last_frame = processor_status.get("last_frame")
+                last_vehicle_count = processor_status.get("smoothed_vehicle_count", 0)
                 if last_frame:
                     return {
                         "processor_id": processor_id,
@@ -190,7 +190,8 @@ def process_frame(video_path, frame_idx, interval, processor_id):
                         "signal": "red",
                         "paused": True,
                         "status": "paused",
-                        "remaining_green_time": 0
+                        "remaining_green_time": 0,
+                        "vehicles": last_vehicle_count
                     }
                 return None
 
@@ -216,12 +217,8 @@ def process_frame(video_path, frame_idx, interval, processor_id):
         detections = [results[0].names[int(cls)] for cls in results[0].boxes.cls]
         counter = Counter(detections)
         
-        vehicle_types = ["car", "truck", "bus", "motorcycle"]
-        vehicle_count = sum(counter[obj] for obj in vehicle_types if obj in counter)
-        
-        emergency_types = ["ambulance", "fire truck", "police car"]
-        emergency_detected = any(obj in counter for obj in emergency_types)
-        
+        vehicle_count = int(sum(counter[obj] for obj in VEHICLE_TYPES if obj in counter))
+        emergency_detected = any(obj in counter for obj in EMERGENCY_TYPES)
         top_detections = dict(counter.most_common(5))
 
         # Prepare frame for display
@@ -231,8 +228,9 @@ def process_frame(video_path, frame_idx, interval, processor_id):
         # Calculate remaining green time
         remaining_green_time = 0
         if current_signal == "green":
-            vehicle_count = processing_status[processor_id].get("smoothed_vehicle_count", 0)
-            total_green_time = BASE_GREEN_TIME + (vehicle_count * EXTRA_TIME_PER_VEHICLE)
+            total_green_time = min(MAX_GREEN_TIME, 
+                                 max(MIN_GREEN_TIME, 
+                                     BASE_GREEN_TIME + (vehicle_count * EXTRA_TIME_PER_VEHICLE)))
             elapsed_time = time.time() - green_start_time
             remaining_green_time = max(0, total_green_time - elapsed_time)
 
@@ -249,16 +247,14 @@ def process_frame(video_path, frame_idx, interval, processor_id):
             "remaining_green_time": remaining_green_time
         }
 
-        # Update processing status
-        with status_lock:
-            if processor_id in processing_status:
-                processing_status[processor_id].update({
-                    "last_frame": frame_base64,
-                    "vehicle_count": vehicle_count,
-                    "emergency": emergency_detected,
-                    "last_update": time.time(),
-                    "frame_data": response
-                })
+        # Update processing status with the latest data
+        update_processing_status(processor_id, {
+            "last_frame": frame_base64,
+            "vehicle_count": vehicle_count,
+            "emergency": emergency_detected,
+            "last_update": time.time(),
+            "frame_data": response
+        })
 
         return response
 
@@ -311,28 +307,17 @@ def handle_process_video(data):
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
 
-    # Perform initial analysis
-    try:
-        avg_vehicles = perform_initial_analysis(video_path, processor_id)
-        update_processing_status(processor_id, {
-            "processing": True,
-            "complete": False,
-            "signal": "red",
-            "paused": True,
-            "total_frames": total_frames,
-            "fps": fps,
-            "smoothed_vehicle_count": avg_vehicles,
-            "status": "analyzing"
-        })
-        update_status(processor_id, f"Initial analysis: {avg_vehicles:.1f} avg vehicles")
-    except Exception as e:
-        emit('status_update', {
-            "processor_id": processor_id,
-            "message": f"Initial analysis failed: {str(e)}",
-            "error": True,
-            "status": "error"
-        })
-        return
+    # Initialize processing status
+    update_processing_status(processor_id, {
+        "processing": True,
+        "complete": False,
+        "signal": "red",
+        "paused": True,
+        "total_frames": total_frames,
+        "fps": fps,
+        "smoothed_vehicle_count": 0,  # Start with 0, will be updated in real-time
+        "status": "ready"
+    })
 
     # Add to processing queue
     if processor_id not in green_signal_order:
@@ -407,10 +392,11 @@ def handle_stop_processing():
     logging.info("All processing stopped by user")
 
 def allocate_traffic_signals():
-    """Optimized signal allocation with vehicle-based priority"""
+    """Optimized signal allocation with vehicle-based priority and proper switching"""
     global last_green_signal, green_start_time, green_signal_order
 
     with status_lock:
+        # Get active processors (those currently processing)
         active_processors = {
             pid: status for pid, status in processing_status.items()
             if status.get('processing', False) and not status.get('complete', False)
@@ -422,43 +408,28 @@ def allocate_traffic_signals():
         current_time = time.time()
         elapsed_time = current_time - green_start_time
 
-        # Check if current green signal still has time
+        # Check if current green signal is still active and has time remaining
         if last_green_signal in active_processors:
-            vehicle_count = active_processors[last_green_signal].get("smoothed_vehicle_count", 0)
-            green_time = BASE_GREEN_TIME + (vehicle_count * EXTRA_TIME_PER_VEHICLE)
+            processor_status = active_processors[last_green_signal]
+            vehicle_count = processor_status.get("smoothed_vehicle_count", 0)
+            
+            # Calculate dynamic green time based on current vehicle count
+            green_time = calculate_green_time(vehicle_count)
+            
             if elapsed_time < green_time:
                 # Emit remaining time update
                 remaining_time = green_time - elapsed_time
                 socketio.emit('signal_time_update', {
                     "processor_id": last_green_signal,
                     "remaining_time": remaining_time,
-                    "total_time": green_time
+                    "total_time": green_time,
+                    "vehicle_count": vehicle_count
                 })
-                return  # Keep the current green signal active
+                return  # Keep current green signal active
 
-        # Find the next signal in round-robin order
-        next_green = None
-
-        if last_green_signal in green_signal_order:
-            current_idx = green_signal_order.index(last_green_signal)
-            for offset in range(1, len(green_signal_order)):
-                next_idx = (current_idx + offset) % len(green_signal_order)
-                candidate = green_signal_order[next_idx]
-                if candidate in active_processors:
-                    next_green = candidate
-                    break
-
-        # If no suitable candidate found, pick the one with most vehicles
-        if not next_green and active_processors:
-            next_green = max(
-                active_processors.items(),
-                key=lambda x: x[1].get("smoothed_vehicle_count", 0)
-            )[0]
-
-        if not next_green:
-            return
-
-        # First, set all signals to red
+        # If we get here, it's time to switch signals
+        
+        # 1. First set all signals to red
         for pid in active_processors:
             processing_status[pid].update({
                 "signal": "red",
@@ -471,15 +442,25 @@ def allocate_traffic_signals():
                 "green_time": 0
             })
 
-        # Set the selected processor to green
+        # 2. Select the next signal to turn green
+        next_green = select_next_signal(active_processors)
+        if not next_green:
+            return  # No suitable signal found
+
+        # 3. Get vehicle count for the selected signal
+        processor_status = active_processors[next_green]
+        vehicle_count = processor_status.get("smoothed_vehicle_count", 0)
+        green_time = calculate_green_time(vehicle_count)
+
+        # 4. Update the selected processor to green
         processing_status[next_green].update({
             "signal": "green",
             "paused": False
         })
 
-        vehicle_count = active_processors[next_green].get("smoothed_vehicle_count", 0)
-        green_time = BASE_GREEN_TIME + (vehicle_count * EXTRA_TIME_PER_VEHICLE)
-
+        logging.info(f"Switching signal to green for {next_green} with {vehicle_count} vehicles for {green_time} seconds")
+        
+        # 5. Emit updates to clients
         socketio.emit('signal_update', {
             "processor_id": next_green,
             "signal": "green",
@@ -488,9 +469,58 @@ def allocate_traffic_signals():
             "vehicle_count": vehicle_count
         })
 
+        # 6. Update global state
         last_green_signal = next_green
         green_start_time = current_time
         save_state(state)
+
+def calculate_green_time(vehicle_count):
+    """Calculate appropriate green time based on vehicle count"""
+    return min(MAX_GREEN_TIME, 
+              max(MIN_GREEN_TIME, 
+                  BASE_GREEN_TIME + (vehicle_count * EXTRA_TIME_PER_VEHICLE)))
+
+def select_next_signal(active_processors):
+    """
+    Select the next signal to turn green based on:
+    1. Emergency vehicles detected
+    2. Vehicle counts
+    3. Round-robin fairness
+    """
+    # First check for emergency vehicles
+    emergency_signals = [
+        pid for pid, status in active_processors.items()
+        if status.get('emergency', False)
+    ]
+    
+    if emergency_signals:
+        return emergency_signals[0]  # Prioritize first emergency
+    
+    # If no emergencies, use vehicle count + round-robin
+    if not green_signal_order:
+        green_signal_order.extend(active_processors.keys())
+    
+    # Get the current position in the round-robin order
+    current_pos = 0
+    if last_green_signal in green_signal_order:
+        current_pos = green_signal_order.index(last_green_signal)
+    
+    # Find next suitable signal in order
+    for offset in range(1, len(green_signal_order) + 1):
+        next_idx = (current_pos + offset) % len(green_signal_order)
+        candidate = green_signal_order[next_idx]
+        
+        if candidate in active_processors:
+            return candidate
+    
+    # Fallback to highest vehicle count if round-robin fails
+    try:
+        return max(
+            active_processors.items(),
+            key=lambda x: x[1].get("smoothed_vehicle_count", 0)
+        )[0]
+    except:
+        return None
 
 # Initialize scheduler
 scheduler = BackgroundScheduler()
